@@ -1,0 +1,229 @@
+name: Solar System Workflow
+
+on: 
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+
+env:
+    MONGO_URI: "mongodb+srv://supercluster.d83jj.mongodb.net/superData"
+    MONGO_USERNAME: ${{ vars.MONGO_USERNAME }}
+    MONGO_PASSWORD: ${{ secrets.MONGO_PASSWORD }}
+
+
+
+jobs:
+    unit-testing:
+        name: Unit Testing
+        strategy:
+          matrix:
+            node_version: [18,20]
+            os: [ubuntu-latest,macos-latest]
+        runs-on: ${{ matrix.os }}
+        steps:
+        - name: Checkout Repository
+          uses: actions/checkout@v4
+
+        - name: Setup NodeJS Version # need to install this as we are using npm
+          uses: actions/setup-node@v4  # action to install node
+          with:
+            node-version: ${{ matrix.node_version }}
+        - name: Cache NPM dependenices
+          uses: actions/cache@v4
+          with:
+            path: node_modules
+            key:  ${{ runner.os }}-node-modules-${{ hashFiles('package-lock.json')}}
+            # when the  package-lock.json file changed, it will modify the hash value there by creating 
+            # a new key for new cache
+
+    
+        - name: Install Dependencies
+          run: npm install
+    
+        - name: Unit Testing
+          id: unit-testing-step #can be used to track the outcome for next step using steps context
+          run: npm test
+          
+        - name: Archive Test Result
+          # ${{ steps.unit-testing-step.outcome =='failure' || steps.unit-testing-step.outcome == 'success' }}
+          if: ${{ failure() || success() }}   # always()
+          uses: actions/upload-artifact@v4
+          with:
+            name: Mocha-Test-Result # name to the artifact zip file name
+            path: test-results.xml  #locaton to the artifact - actual file 
+
+    code-coverage:
+      name: Code Coverage
+      runs-on: ubuntu-latest
+      steps:
+        - name: Checkout Repository
+          uses: actions/checkout@v4
+        
+        - name: Setup NodeJS Version
+          uses: actions/setup-node@v4
+          with:
+            node-version: 18
+        - name: Cache NPM dependenices
+          uses: actions/cache@v4
+          with:
+            path: node_modules
+            key:  ${{ runner.os }}-node-modules-${{ hashFiles('package-lock.json')}}
+        - name: Install Dependencies
+          run: npm install
+
+        - name: Check code Coverage
+          continue-on-error: true
+          run: npm run coverage
+        
+        - name: Archive Test Result
+          uses: actions/upload-artifact@v4
+          with:
+            name: Code-Coverage_Result # name to the artifact zip file name
+            path: coverage
+            retention-days: 5
+  
+    docker:
+      name: Containerization
+      needs: [unit-testing,code-coverage]
+      permissions: 
+        packages: write
+      runs-on: ubuntu-latest
+      
+      
+      steps:
+        - name: Checkout Repository
+          uses: actions/checkout@v4
+
+        - name: Dockerhub login
+          uses: docker/login-action@v2.2.0
+          with:
+            username: ${{ vars.DOCKERHUB_USERNAME }}
+            password: ${{ secrets.DOCKERHUB_PASSWORD }}
+
+        - name: GHCR login
+          uses: docker/login-action@v2.2.0
+          with:
+            registry: ghcr.io
+            username: ${{ github.repository_owner }}
+            password: ${{ secrets.GITHUB_TOKEN }}
+
+        - name:  Docker image Build 
+          uses: docker/build-push-action@v7
+          with:
+           context: .
+           push: false
+           tags: ${{ vars.DOCKERHUB_USERNAME}}/solor-system:${{ github.sha}} # commit id sha- name of the image
+
+        - name: Docker Image Test
+          run: |
+           docker images
+
+            docker run --name solar-system-app -d \
+           -p 3000:3000 \
+           -e MONGO_URI=$MONGO_URI \
+           -e MONGO_USERNAME=$MONGO_USERNAME \
+           -e MONGO_PASSWORD=$MONGO_PASSWORD \
+           ${{ vars.DOCKERHUB_USERNAME }}/solor-system:${{ github.sha }} # name of the image
+
+           export IP=$(docker inspect -f '{{range.NetworkSettings.Networks}}{{.IPAddress}}{{end}}' solar-system-app)
+
+           echo $IP
+
+           echo Testing image URL using wget
+
+           wget -qO- http://127.0.0.1:3000/live | grep live
+
+        # - name: Docker image push
+        #   uses: docker/build-push-action@v7
+        #   with:
+        #    context: .
+        #    push: true
+        #    tags: ${{ vars.DOCKERHUB_USERNAME}}/solor-system:${{ github.sha}} # commit id sha- name of the image
+
+        - name: Container registry push
+          uses: docker/build-push-action@v7
+          with:
+           context: .
+           push: true
+           tags: |
+            ${{ vars.DOCKERHUB_USERNAME}}/solor-system:${{ github.sha}} 
+            ghcr.io/${{ github.repository_owner }}/solor-system:${{ github.sha}} 
+    
+    dev-deploy:
+      needs: docker
+      runs-on : ubuntu-latest
+
+      environment:
+        name: production
+
+      steps:
+       - name: Checkout Repository
+         uses: actions/checkout@v4
+
+       - name: Setup kubectl
+         uses: azure/setup-kubectl@v4
+
+       - name: Setup Helm
+         uses: azure/setup-helm@v4
+
+       - name: Create Kubernetes cluster
+         uses: helm/kind-action@v1
+
+       - name:  Verify Cluster
+         run: |
+          kubectl version --client
+          kubectl cluster-info
+          kubectl get nodes
+
+       - name: Get Cluster IP
+         run: |
+          IP=$(kubectl get nodes -o wide --no-headers | awk '{print $6}')
+          echo "INGRESS_IP=$IP" >> $GITHUB_ENV
+
+       - name: Replace Tokens in Manifest files
+         uses: cschleiden/replace-tokens@v1
+         with:
+          tokenPrefix: '_{_'
+          tokenSuffix: '_}_'
+          files: '["kubernetes/production/*.yaml"]'
+        
+         env:
+          NAMESPACE: ${{ vars.NAMESPACE }}
+          REPLICAS: ${{ vars.REPLICAS }}
+          IMAGE: ${{ vars.DOCKERHUB_USERNAME }}/solar-system:${{ github.sha }}
+          INGRESS_IP: ${{ env.INGRESS_IP }}
+        
+       - name:  Create production Namespace
+         run: |
+          kubectl create namespace ${{ vars.NAMESPACE }} --dry-run=client -o yaml | kubectl apply -f -
+
+       - name:  Deploy App in production
+         run: |
+          kubectl apply -f kubernetes/production/
+
+       - name: Wait for Deployment
+         run: |
+          kubectl rollout status deployment/solar-system \
+            -n production --timeout=180s
+
+       - name:  Verify Deployment
+         run: |
+          kubectl get all -n ${{ vars.NAMESPACE }}
+
+
+       
+
+
+               
+
+
+
+
+        
+
+    
+        
+
+
+        
