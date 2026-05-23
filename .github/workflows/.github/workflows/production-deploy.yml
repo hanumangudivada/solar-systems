@@ -5,7 +5,6 @@ on:
   push:
     branches:
       - main
-      - 'feature/**'
 
 env:
     MONGO_URI: "mongodb+srv://supercluster.d83jj.mongodb.net/superData"
@@ -154,6 +153,10 @@ jobs:
     dev-deploy:
       needs: docker
       runs-on : ubuntu-latest
+
+      environment:
+        name: production
+
       steps:
        - name: Checkout Repository
          uses: actions/checkout@v4
@@ -183,7 +186,7 @@ jobs:
          with:
           tokenPrefix: '_{_'
           tokenSuffix: '_}_'
-          files: '["kubernetes/development/*.yaml"]'
+          files: '["kubernetes/production/*.yaml"]'
         
          env:
           NAMESPACE: ${{ vars.NAMESPACE }}
@@ -191,21 +194,25 @@ jobs:
           IMAGE: ${{ vars.DOCKERHUB_USERNAME }}/solar-system:${{ github.sha }}
           INGRESS_IP: ${{ env.INGRESS_IP }}
         
-       - name:  Create Namespace
+       - name:  Create production Namespace
          run: |
           kubectl create namespace ${{ vars.NAMESPACE }} --dry-run=client -o yaml | kubectl apply -f -
-       - name:  Deploy App
+
+       - name:  Deploy App in production
          run: |
-          kubectl apply -f kubernetes/development/
+          kubectl apply -f kubernetes/production/
+
+       - name: Wait for Deployment
+         run: |
+          kubectl rollout status deployment/solar-system \
+            -n production --timeout=180s
+
        - name:  Verify Deployment
          run: |
           kubectl get all -n ${{ vars.NAMESPACE }}
 
 
        
-       
-
-
 
 
                
