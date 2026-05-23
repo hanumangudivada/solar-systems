@@ -214,7 +214,14 @@ jobs:
        - name: Wait for Deployment
          run: |
           kubectl rollout status deployment/solar-system \
-            -n production --timeout=180s
+            -n production --timeout=300s
+
+       - name: Debug Pods
+         if: always()
+         run: |
+          kubectl get pods -n production
+          kubectl describe pods -n production
+          kubectl get events -n production
 
        - name:  Verify Deployment
          run: |
