@@ -202,6 +202,15 @@ jobs:
          run: |
           kubectl apply -f kubernetes/production/
 
+       - name: Debug Deployment
+         if: always()
+         run: |
+          kubectl get pods -n production
+          echo "---------------------"
+          kubectl describe pods -n production
+          echo "---------------------"
+          kubectl get events -n production --sort-by=.metadata.creationTimestamp
+
        - name: Wait for Deployment
          run: |
           kubectl rollout status deployment/solar-system \
