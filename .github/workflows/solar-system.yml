@@ -43,7 +43,7 @@ jobs:
         #   run: npm install
 
         - name: Composite Action - Installing and Caching npm packages
-          uses: ./.github/workflows/custom-actions/npm-action/action.yml
+          uses: ./.github/workflows/custom-actions/npm-action
           with:
             path_to_folder: node_modules
     
@@ -79,7 +79,7 @@ jobs:
         # - name: Install Dependencies
         #   run: npm install
         - name: Composite Action - Installing and Caching npm packages
-          uses: ./.github/workflows/custom-actions/npm-action/action.yml
+          uses: ./.github/workflows/custom-actions/npm-action
           with:
             path_to_folder: node_modules
 
